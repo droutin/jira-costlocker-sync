@@ -10,7 +10,7 @@ export interface WorklogEntry {
   author: string
   costlockerBudgetId?: number
   costlockerActivityId?: number
-  syncStatus: 'pending' | 'synced' | 'error'
+  syncStatus: 'pending' | 'synced' | 'skipped' | 'error'
   syncError?: string
 }
 
@@ -24,6 +24,7 @@ export interface SyncResult {
   worklogId: string
   success: boolean
   error?: string
+  skipped?: boolean
 }
 
 export interface CostlockerBudget {

@@ -4,6 +4,7 @@ interface AppConfig {
   jiraApiToken: string
   jiraAccountId: string
   costlockerApiToken: string
+  dateOffsetHours: number
 }
 
 const CONFIG_KEY = 'jira-costlocker-config'
@@ -14,6 +15,7 @@ export function useConfig() {
     jiraApiToken: '',
     jiraAccountId: 'current-user',
     costlockerApiToken: '',
+    dateOffsetHours: Math.round(-new Date().getTimezoneOffset() / 60),
   }))
 
   const mappings = useState<ProjectMapping[]>('app-mappings', () => [])
@@ -22,7 +24,13 @@ export function useConfig() {
     if (import.meta.server) return
     try {
       const raw = localStorage.getItem(CONFIG_KEY)
-      if (raw) Object.assign(config.value, JSON.parse(raw))
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        Object.assign(config.value, parsed)
+        if (!('dateOffsetHours' in parsed)) {
+          config.value.dateOffsetHours = Math.round(-new Date().getTimezoneOffset() / 60)
+        }
+      }
     }
     catch {}
     try {
