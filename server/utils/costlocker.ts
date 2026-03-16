@@ -1,5 +1,9 @@
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc.js";
 import type { WorklogEntry, SyncResult, CostlockerBudget } from "~~/app/types";
 import type { ServerConfig } from "./config";
+
+dayjs.extend(utc);
 
 const COSTLOCKER_API = "https://api.costlocker.com/graphql";
 const COSTLOCKER_REST_API = "https://rest.costlocker.com/api";
@@ -96,10 +100,11 @@ export async function fetchCostlockerBudgets(config: ServerConfig): Promise<Cost
   const mapProject: Record<string, { name: string; jobid: string; client_id: string }> =
     trackingData.MapProject || {};
 
-  // Activity names from 7_Lst_Activity (keyed by activity id)
-  const activityMap: Record<string, any> = typeof res["7_Lst_Activity"] === "object" && res["7_Lst_Activity"] !== null
+  // Activity names from 7_Lst_Activity (array → map keyed by key)
+  const activityList: Array<{ key: string; name: string }> = Array.isArray(res["7_Lst_Activity"])
     ? res["7_Lst_Activity"]
-    : {};
+    : [];
+  const activityMap = new Map(activityList.map(a => [a.key, a.name]));
 
   console.log(`[Costlocker] Got ${items.length} assignment items, ${Object.keys(mapProject).length} projects`);
 
@@ -126,10 +131,11 @@ export async function fetchCostlockerBudgets(config: ServerConfig): Promise<Cost
     }
 
     const activityId = Number(item.activity_id);
-    if (!budget.activities.some(a => a.id === activityId)) {
-      const activityData = activityMap[item.activity_id];
-      const activityName = activityData?.na || `Activity ${activityId}`;
-      budget.activities.push({ id: activityId, name: activityName });
+    const activityName = activityMap.get(item.activity_id) || `Activity ${activityId}`;
+    const label = item.task_name ? `${activityName} - ${item.task_name}` : activityName;
+
+    if (!budget.activities.some(a => a.name === label)) {
+      budget.activities.push({ id: activityId, name: label });
     }
   }
 
@@ -141,15 +147,111 @@ export async function fetchCostlockerBudgets(config: ServerConfig): Promise<Cost
   return result;
 }
 
+function normalizeStartAt(dt: string): string {
+  return dt.replace(/\.\d+/, '').replace(/Z$/, '').replace(/[+-]\d{2}:?\d{2}$/, '');
+}
+
+function timeEntryFingerprint(
+  budgetId: number,
+  activityId: number,
+  startAt: string,
+  duration: number,
+): string {
+  return `${budgetId}|${activityId}|${normalizeStartAt(startAt)}|${Math.round(duration)}`;
+}
+
+async function fetchExistingTimeEntries(
+  config: ServerConfig,
+  personId: number,
+  dateFrom: string,
+  dateTo: string,
+): Promise<Set<string>> {
+  const query = `query TimeEntries($filter: TimeEntryFilterInput, $pagination: PaginationInput) {
+    timeEntries(filter: $filter, pagination: $pagination) {
+      totalCount
+      items {
+        startAt
+        duration
+        assignmentKey {
+          personId
+          taskKey { budgetId activityId }
+        }
+      }
+    }
+  }`;
+
+  type TimeEntryItem = {
+    startAt: string;
+    duration: number;
+    assignmentKey: {
+      personId: number;
+      taskKey: { budgetId: number; activityId: number };
+    };
+  };
+
+  const filter = {
+    dateRange: { start: dateFrom, end: dateTo },
+    nonproject: false,
+    personIds: { includeIds: [personId] },
+  };
+
+  console.log(`[Costlocker] Dedup query filter:`, JSON.stringify(filter));
+
+  try {
+    const allItems: TimeEntryItem[] = [];
+    let page = 1;
+    let totalCount = 0;
+
+    do {
+      const data = await gql<{
+        timeEntries: { totalCount: number; items: TimeEntryItem[] };
+      }>(config, query, { filter, pagination: { page, pageSize: 100 } });
+
+      totalCount = data.timeEntries.totalCount;
+      allItems.push(...data.timeEntries.items);
+      page++;
+    } while (allItems.length < totalCount);
+
+    console.log(`[Costlocker] Fetched ${allItems.length} existing time entries for dedup`);
+
+    return new Set(
+      allItems.map(e =>
+        timeEntryFingerprint(
+          e.assignmentKey.taskKey.budgetId,
+          e.assignmentKey.taskKey.activityId,
+          e.startAt,
+          e.duration,
+        ),
+      ),
+    );
+  } catch (err: any) {
+    console.warn(`[Costlocker] Failed to fetch existing time entries for dedup, skipping dedup: ${err.message}`);
+    return new Set();
+  }
+}
+
 export async function syncWorklogsToCostlocker(
   config: ServerConfig,
   entries: WorklogEntry[],
+  dateOffsetHours: number = 0,
 ): Promise<SyncResult[]> {
   console.log(`[Costlocker] Starting sync of ${entries.length} worklogs`);
   const totalStart = Date.now();
 
   const personId = await fetchCostlockerCurrentPersonId(config);
   console.log(`[Costlocker] Using person ID: ${personId}`);
+
+  const mappedEntries = entries.filter(e => e.costlockerBudgetId && e.costlockerActivityId);
+  const dates = mappedEntries.map(e => e.date).sort();
+  let existingFingerprints = new Set<string>();
+  if (dates.length) {
+    const endDateExclusive = new Date(dates[dates.length - 1]!);
+    endDateExclusive.setDate(endDateExclusive.getDate() + 1);
+    const endStr = endDateExclusive.toISOString().substring(0, 10);
+    console.log(`[Costlocker] Dedup: ${mappedEntries.length}/${entries.length} entries have mappings, date range: ${dates[0]} — ${endStr}`);
+    existingFingerprints = await fetchExistingTimeEntries(config, personId, dates[0]!, endStr);
+    console.log(`[Costlocker] ${existingFingerprints.size} unique existing fingerprints for dedup`);
+  }
 
   const results: SyncResult[] = [];
 
@@ -169,13 +271,17 @@ export async function syncWorklogsToCostlocker(
 
     // GraphQL duration field — try seconds (scs_tracked in REST API uses seconds)
     const duration = entry.durationSeconds;
-    const description = [entry.jiraIssueKey, entry.description]
+    const description = [entry.jiraIssueKey, entry.description || entry.jiraIssueSummary]
       .filter(Boolean)
       .join(" - ");
-    // Costlocker expects UTC DateTime with Z suffix, e.g. 2026-03-05T09:30:00Z
-    let startAt = entry.startTime || `${entry.date}T00:00:00`;
-    if (!startAt.endsWith("Z") && !startAt.includes("+")) {
-      startAt = `${startAt}Z`;
+    const rawStart = entry.startTime || `${entry.date}T00:00:00`;
+    let startAt = dayjs.utc(normalizeStartAt(rawStart)).add(dateOffsetHours, "hour").toISOString();
+
+    const fp = timeEntryFingerprint(entry.costlockerBudgetId, entry.costlockerActivityId, startAt, duration);
+    if (existingFingerprints.has(fp)) {
+      console.log(`[Costlocker] ${i + 1}/${entries.length} SKIP ${label} — already exists in Costlocker`);
+      results.push({ worklogId: entry.id, success: false, skipped: true, error: "Already exists in Costlocker" });
+      continue;
     }
 
     const mutation = `mutation CreateTimeEntry($input: [CreateTimeEntryInput!]!) {

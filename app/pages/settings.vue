@@ -15,6 +15,9 @@
         <UFormField label="Costlocker API Token">
           <UInput v-model="config.costlockerApiToken" type="password" placeholder="Your API token" />
         </UFormField>
+        <UFormField label="Timezone Offset (hours)" hint="Jira sends dates without timezone. Offset from UTC (e.g. 2 for UTC+2). Defaults to your browser timezone.">
+          <UInput v-model.number="config.dateOffsetHours" type="number" />
+        </UFormField>
         <UButton @click="saveConfig">Save Configuration</UButton>
         <UBadge v-if="configSaved" color="success">Saved to browser</UBadge>
       </div>
@@ -81,6 +84,7 @@
               v-model="m.costlockerBudgetId"
               :items="budgetOptions"
               value-key="value"
+              class="w-full min-w-64"
             />
             <UInput v-else v-model.number="m.costlockerBudgetId" type="number" placeholder="Budget ID" />
           </UFormField>
@@ -89,7 +93,9 @@
               v-if="getActivityOptions(m.costlockerBudgetId).length"
               v-model="m.costlockerActivityId"
               :items="getActivityOptions(m.costlockerBudgetId)"
+              label-key="label"
               value-key="value"
+              class="w-full min-w-64"
             />
             <UInput v-else v-model.number="m.costlockerActivityId" type="number" placeholder="Activity ID" />
           </UFormField>

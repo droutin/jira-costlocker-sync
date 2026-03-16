@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@nuxt/ui": "^4.5.1",
+    "dayjs": "^1.11.20",
     "jira-costlocker-sync": ".",
     "nuxt": "^4.3.1",
     "tailwindcss": "^4.2.1",

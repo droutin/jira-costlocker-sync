@@ -34,17 +34,17 @@
 
     <!-- Sync Summary -->
     <UAlert
-      v-if="syncSummary && syncSummary.failed === 0"
+      v-if="syncSummary && syncSummary.failed === 0 && syncSummary.skipped === 0"
       color="success"
       title="Sync Complete"
       :description="`All ${syncSummary.succeeded} worklogs synced successfully.`"
     />
 
     <UAlert
-      v-if="syncSummary && syncSummary.failed > 0"
-      color="warning"
+      v-if="syncSummary && (syncSummary.failed > 0 || syncSummary.skipped > 0)"
+      :color="syncSummary.failed > 0 ? 'warning' : 'info'"
       title="Sync Complete"
-      :description="`${syncSummary.succeeded} succeeded, ${syncSummary.failed} failed.`"
+      :description="syncSummaryText"
     />
 
     <!-- Sync Errors -->
@@ -68,10 +68,11 @@
       </template>
       <div class="space-y-2">
         <div v-for="r in syncResults" :key="r.worklogId" class="flex items-center gap-2">
-          <UBadge :color="r.success ? 'success' : 'error'">
-            {{ r.success ? 'OK' : 'FAIL' }}
+          <UBadge :color="r.success ? 'success' : r.skipped ? 'warning' : 'error'">
+            {{ r.success ? 'OK' : r.skipped ? 'SKIP' : 'FAIL' }}
           </UBadge>
           <span>{{ getWorklogLabel(r.worklogId) }}</span>
+          <span v-if="r.skipped" class="text-sm text-dimmed">Already in Costlocker</span>
         </div>
       </div>
     </UCard>
@@ -81,7 +82,7 @@
 <script setup lang="ts">
 import type { WorklogEntry, SyncResult } from '~/types'
 
-const { load, authHeaders, applyMappings } = useConfig()
+const { config, load, authHeaders, applyMappings } = useConfig()
 
 const today = new Date().toISOString().substring(0, 10)
 const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().substring(0, 10)
@@ -93,23 +94,71 @@ const fetching = ref(false)
 const fetchError = ref('')
 const syncing = ref(false)
 const syncResults = ref<SyncResult[]>([])
-const syncSummary = ref<{ succeeded: number; failed: number; errors: Array<{ worklogId: string; error: string }> } | null>(null)
+const syncSummary = ref<{ succeeded: number; failed: number; skipped: number; errors: Array<{ worklogId: string; error: string }> } | null>(null)
 
 const hasUnsyncedEntries = computed(() => worklogs.value.some(w => w.syncStatus === 'pending'))
 
+const syncSummaryText = computed(() => {
+  if (!syncSummary.value) return ''
+  const parts: string[] = []
+  if (syncSummary.value.succeeded) parts.push(`${syncSummary.value.succeeded} synced`)
+  if (syncSummary.value.skipped) parts.push(`${syncSummary.value.skipped} skipped (already in Costlocker)`)
+  if (syncSummary.value.failed) parts.push(`${syncSummary.value.failed} failed`)
+  return parts.join(', ')
+})
+
 const columns = [
-  { accessorKey: 'date', header: 'Date' },
-  { accessorKey: 'jiraIssueKey', header: 'Issue' },
-  { accessorKey: 'jiraIssueSummary', header: 'Summary' },
-  { accessorKey: 'description', header: 'Description' },
+  { accessorKey: 'date', header: 'Date', meta: { class: { td: 'max-w-20 truncate' } } },
+  { accessorKey: 'jiraIssueKey', header: 'Issue', meta: { class: { td: 'max-w-20 truncate' } } },
+  { accessorKey: 'jiraIssueSummary', header: 'Summary', meta: { class: { td: 'max-w-60 truncate' } } },
+  { accessorKey: 'description', header: 'Description', meta: { class: { td: 'max-w-48 truncate' } } },
+  {
+    accessorKey: 'startTime',
+    header: 'Start',
+    cell: ({ row }: any) => formatTime(row.original.startTime),
+    meta: { class: { td: 'max-w-16 truncate' } },
+  },
+  {
+    id: 'endTime',
+    header: 'End',
+    cell: ({ row }: any) => formatEndTime(row.original),
+    meta: { class: { td: 'max-w-16 truncate' } },
+  },
   {
     accessorKey: 'durationSeconds',
     header: 'Duration',
     cell: ({ row }: any) => formatDuration(row.original.durationSeconds),
+    meta: { class: { td: 'max-w-16 truncate' } },
   },
-  { accessorKey: 'costlockerBudgetId', header: 'CL Budget' },
-  { accessorKey: 'syncStatus', header: 'Status' },
+  { accessorKey: 'costlockerBudgetId', header: 'CL Budget', meta: { class: { td: 'max-w-16 truncate' } } },
+  { accessorKey: 'syncStatus', header: 'Status', meta: { class: { td: 'max-w-16 truncate' } } },
 ]
+
+function stripTz(dt: string): string {
+  return dt.replace(/\.\d+/, '').replace(/Z$/, '').replace(/[+-]\d{2}:?\d{2}$/, '')
+}
+
+function offsetMs(): number {
+  return (config.value.dateOffsetHours ?? 0) * 3600_000
+}
+
+function formatTime(isoOrDate: string): string {
+  if (!isoOrDate) return '—'
+  const stripped = stripTz(isoOrDate)
+  const utc = new Date(stripped + 'Z')
+  if (Number.isNaN(utc.getTime())) return '—'
+  const adjusted = new Date(utc.getTime() + offsetMs())
+  return `${String(adjusted.getUTCHours()).padStart(2, '0')}:${String(adjusted.getUTCMinutes()).padStart(2, '0')}`
+}
+
+function formatEndTime(row: WorklogEntry): string {
+  if (!row.startTime) return '—'
+  const stripped = stripTz(row.startTime)
+  const utc = new Date(stripped + 'Z')
+  if (Number.isNaN(utc.getTime())) return '—'
+  const adjusted = new Date(utc.getTime() + offsetMs() + row.durationSeconds * 1000)
+  return `${String(adjusted.getUTCHours()).padStart(2, '0')}:${String(adjusted.getUTCMinutes()).padStart(2, '0')}`
+}
 
 function formatDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600)
@@ -126,7 +175,7 @@ async function fetchWorklogs() {
   fetching.value = true
   fetchError.value = ''
   syncResults.value = []
-
+  
   try {
     worklogs.value = await $fetch<WorklogEntry[]>('/api/worklogs', {
       query: { from: dateFrom.value, to: dateTo.value },
@@ -150,19 +199,22 @@ async function syncWorklogs() {
   const toSync = worklogs.value.filter(w => w.syncStatus === 'pending')
 
   try {
-    const res = await $fetch<{ results: SyncResult[]; succeeded: number; failed: number; errors: Array<{ worklogId: string; error: string }> }>('/api/sync', {
+    const res = await $fetch<{ results: SyncResult[]; succeeded: number; failed: number; skipped: number; errors: Array<{ worklogId: string; error: string }> }>('/api/sync', {
       method: 'POST',
-      body: { worklogs: toSync },
+      body: {
+        worklogs: toSync,
+        dateOffsetHours: config.value.dateOffsetHours ?? Math.round(-new Date().getTimezoneOffset() / 60),
+      },
       headers: authHeaders(),
     })
 
     syncResults.value = res.results
-    syncSummary.value = { succeeded: res.succeeded, failed: res.failed, errors: res.errors }
+    syncSummary.value = { succeeded: res.succeeded, failed: res.failed, skipped: res.skipped, errors: res.errors }
 
     for (const r of res.results) {
       const wl = worklogs.value.find(w => w.id === r.worklogId)
       if (wl) {
-        wl.syncStatus = r.success ? 'synced' : 'error'
+        wl.syncStatus = r.success ? 'synced' : r.skipped ? 'skipped' : 'error'
         wl.syncError = r.error
       }
     }
