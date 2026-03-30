@@ -82,7 +82,7 @@
 <script setup lang="ts">
 import type { WorklogEntry, SyncResult } from '~/types'
 
-const { config, load, authHeaders, applyMappings } = useConfig()
+const { load, authHeaders, applyMappings } = useConfig()
 
 const today = new Date().toISOString().substring(0, 10)
 const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().substring(0, 10)
@@ -134,30 +134,19 @@ const columns = [
   { accessorKey: 'syncStatus', header: 'Status', meta: { class: { td: 'max-w-16 truncate' } } },
 ]
 
-function stripTz(dt: string): string {
-  return dt.replace(/\.\d+/, '').replace(/Z$/, '').replace(/[+-]\d{2}:?\d{2}$/, '')
-}
-
-function offsetMs(): number {
-  return (config.value.dateOffsetHours ?? 0) * 3600_000
-}
-
 function formatTime(isoOrDate: string): string {
   if (!isoOrDate) return '—'
-  const stripped = stripTz(isoOrDate)
-  const utc = new Date(stripped + 'Z')
-  if (Number.isNaN(utc.getTime())) return '—'
-  const adjusted = new Date(utc.getTime() + offsetMs())
-  return `${String(adjusted.getUTCHours()).padStart(2, '0')}:${String(adjusted.getUTCMinutes()).padStart(2, '0')}`
+  const d = new Date(isoOrDate)
+  if (Number.isNaN(d.getTime())) return '—'
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
 function formatEndTime(row: WorklogEntry): string {
   if (!row.startTime) return '—'
-  const stripped = stripTz(row.startTime)
-  const utc = new Date(stripped + 'Z')
-  if (Number.isNaN(utc.getTime())) return '—'
-  const adjusted = new Date(utc.getTime() + offsetMs() + row.durationSeconds * 1000)
-  return `${String(adjusted.getUTCHours()).padStart(2, '0')}:${String(adjusted.getUTCMinutes()).padStart(2, '0')}`
+  const d = new Date(row.startTime)
+  if (Number.isNaN(d.getTime())) return '—'
+  const end = new Date(d.getTime() + row.durationSeconds * 1000)
+  return `${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}`
 }
 
 function formatDuration(seconds: number): string {
@@ -203,7 +192,6 @@ async function syncWorklogs() {
       method: 'POST',
       body: {
         worklogs: toSync,
-        dateOffsetHours: config.value.dateOffsetHours ?? Math.round(-new Date().getTimezoneOffset() / 60),
       },
       headers: authHeaders(),
     })

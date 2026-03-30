@@ -78,14 +78,16 @@ export async function fetchJiraWorklogs(config: ServerConfig, from: string, to: 
     console.log(`[Jira] Page ${Math.floor(startAt / maxResults) + 1}: got ${res.values.length} worklogs (${startAt + 1}-${startAt + res.values.length} of ${res.total}) in ${pageMs}ms`)
 
     for (const entry of res.values) {
-      const date = entry.worklog.startTime?.substring(0, 10) || from
+      const rawStart = entry.worklog.startTime
+      const startUtc = rawStart ? new Date(rawStart).toISOString() : null
+      const date = startUtc?.substring(0, 10) || from
       worklogs.push({
         id: `tt-${entry.worklog.id}`,
         jiraWorklogId: String(entry.worklog.jiraWorklogId),
         jiraIssueKey: entry.issue.key,
         jiraIssueSummary: entry.issue.summary,
         date,
-        startTime: entry.worklog.startTime || `${date}T00:00:00`,
+        startTime: startUtc || `${date}T00:00:00Z`,
         durationSeconds: entry.worklog.durationInSeconds,
         description: entry.worklog.description || '',
         author: entry.worklog.author?.name || 'Unknown',

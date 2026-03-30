@@ -1,9 +1,5 @@
-import dayjs from "dayjs";
-import utc from "dayjs/plugin/utc.js";
 import type { WorklogEntry, SyncResult, CostlockerBudget } from "~~/app/types";
 import type { ServerConfig } from "./config";
-
-dayjs.extend(utc);
 
 const COSTLOCKER_API = "https://api.costlocker.com/graphql";
 const COSTLOCKER_REST_API = "https://rest.costlocker.com/api";
@@ -147,8 +143,23 @@ export async function fetchCostlockerBudgets(config: ServerConfig): Promise<Cost
   return result;
 }
 
-function normalizeStartAt(dt: string): string {
+/** Strip milliseconds, Z suffix, and timezone offset to get a bare datetime for comparison */
+function stripTz(dt: string): string {
   return dt.replace(/\.\d+/, '').replace(/Z$/, '').replace(/[+-]\d{2}:?\d{2}$/, '');
+}
+
+/** Convert a UTC ISO string to a naive local datetime in the given IANA timezone */
+function utcToLocal(utcIso: string, timezone: string): string {
+  const d = new Date(utcIso);
+  // Intl.DateTimeFormat formats the UTC instant in the target timezone
+  const parts = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: timezone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).format(d);
+  // sv-SE locale gives "YYYY-MM-DD HH:mm:ss" — convert to ISO-like
+  return parts.replace(' ', 'T');
 }
 
 function timeEntryFingerprint(
@@ -157,7 +168,7 @@ function timeEntryFingerprint(
   startAt: string,
   duration: number,
 ): string {
-  return `${budgetId}|${activityId}|${normalizeStartAt(startAt)}|${Math.round(duration)}`;
+  return `${budgetId}|${activityId}|${stripTz(startAt)}|${Math.round(duration)}`;
 }
 
 async function fetchExistingTimeEntries(
@@ -230,10 +241,11 @@ async function fetchExistingTimeEntries(
   }
 }
 
+const COSTLOCKER_TIMEZONE = 'Europe/Prague';
+
 export async function syncWorklogsToCostlocker(
   config: ServerConfig,
   entries: WorklogEntry[],
-  dateOffsetHours: number = 0,
 ): Promise<SyncResult[]> {
   console.log(`[Costlocker] Starting sync of ${entries.length} worklogs`);
   const totalStart = Date.now();
@@ -274,8 +286,9 @@ export async function syncWorklogsToCostlocker(
     const description = [entry.jiraIssueKey, entry.description || entry.jiraIssueSummary]
       .filter(Boolean)
       .join(" - ");
-    const rawStart = entry.startTime || `${entry.date}T00:00:00`;
-    let startAt = dayjs.utc(normalizeStartAt(rawStart)).add(dateOffsetHours, "hour").toISOString();
+    const startUtc = entry.startTime || `${entry.date}T00:00:00Z`;
+    // Costlocker expects naive local time — convert UTC to Europe/Prague
+    const startAt = utcToLocal(startUtc, COSTLOCKER_TIMEZONE);
 
     const fp = timeEntryFingerprint(entry.costlockerBudgetId, entry.costlockerActivityId, startAt, duration);
     if (existingFingerprints.has(fp)) {

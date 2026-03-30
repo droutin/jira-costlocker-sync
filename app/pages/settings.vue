@@ -15,9 +15,6 @@
         <UFormField label="Costlocker API Token">
           <UInput v-model="config.costlockerApiToken" type="password" placeholder="Your API token" />
         </UFormField>
-        <UFormField label="Timezone Offset (hours)" hint="Jira sends dates without timezone. Offset from UTC (e.g. 2 for UTC+2). Defaults to your browser timezone.">
-          <UInput v-model.number="config.dateOffsetHours" type="number" />
-        </UFormField>
         <UButton @click="saveConfig">Save Configuration</UButton>
         <UBadge v-if="configSaved" color="success">Saved to browser</UBadge>
       </div>
